@@ -6,11 +6,12 @@ import (
 	"maps"
 	"net/http"
 	"regexp"
+	"strings"
 )
 
 type RequestHandlerPackage struct {
-	Handler     RequestHandler
-	IndexParams map[int]string
+	Handler   RequestHandler
+	ParamList map[int]string
 }
 type RequestHandlerMap map[HttpRequestMethod]map[string]RequestHandlerPackage
 type RequestHandler func(rw http.ResponseWriter, req *http.Request)
@@ -33,6 +34,7 @@ type Router struct {
 	routes RequestHandlerMap
 }
 
+// ----------- REQUEST ROUTING -----------
 func (r *Router) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	debugRequest(rw, req)
 	handler, err := r.findReqHandler(req)
@@ -42,6 +44,7 @@ func (r *Router) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	handler(rw, req)
 }
 
+// ----------- PATTERN MATCHING -----------
 func (r *Router) findReqHandler(req *http.Request) (RequestHandler, error) {
 	_, methodFound := r.routes[HttpRequestMethod(req.Method)]
 	if !methodFound {
@@ -57,6 +60,10 @@ func (r *Router) findReqHandler(req *http.Request) (RequestHandler, error) {
 	if !routeFound {
 		path, matchFound := matchRoutePattern(maps.Keys(r.routes[HttpRequestMethod(req.Method)]), req.URL.Path)
 		if matchFound {
+			re := regexp.MustCompile(`(?i)({[a-z0-9-_]+})`)
+			values := re.FindStringSubmatch(req.URL.Path)
+			Log.Debug(values)
+
 			return r.routes[HttpRequestMethod(req.Method)][path].Handler, nil
 		}
 	}
@@ -75,40 +82,84 @@ func matchRoutePattern(keysIter iter.Seq[string], path string) (string, bool) {
 	return "", false
 }
 
+// ----------- ROUTE REGISTRATION -----------
 func (r *Router) RegisterRoute(method HttpRequestMethod, path string, handler RequestHandler) {
 	if r.routes[method] == nil {
 		r.routes[method] = make(map[string]RequestHandlerPackage)
 	}
 
-	re := regexp.MustCompile(`(?i)({[a-z0-9-_]+})`)
-	// If no pattern is found save the route as is
-	if re.FindStringIndex(path) == nil {
-		r.routes[method][path] = RequestHandlerPackage{Handler: handler}
-		return
+	type paramSearch struct {
+		start int
+		end   int
+		pos   int
+		name  string
 	}
 
-	// Substitute parameters with the matching regex for future matching
-	// Anchor the pattern to match the entire request path
-	newPath := "^" + re.ReplaceAllString(path, `([a-z0-9-_]+)`) + "$"
-	r.routes[method][newPath] = RequestHandlerPackage{Handler: handler}
+	// Searching for url parameters patterns
+	paramList := []paramSearch{}
+	pathDepth := -1
+	found := false
+	foundAt := 0
+
+	paramNameBuilder := strings.Builder{}
+	for i, c := range path {
+		switch c {
+		case '/':
+			pathDepth++
+		case '{':
+			found = true
+			foundAt = i
+		case '}':
+			found = false
+			paramList = append(paramList, paramSearch{
+				start: foundAt,
+				end:   i,
+				pos:   pathDepth,
+				name:  paramNameBuilder.String(),
+			})
+			paramNameBuilder.Reset()
+		}
+		if found && c != '{' {
+			paramNameBuilder.WriteRune(c)
+		}
+	}
+
+	pathBuilder := strings.Builder{}
+	lastPos := 0
+	reqParamList := map[int]string{}
+
+	for _, param := range paramList {
+		pathBuilder.WriteString(path[lastPos:param.start])
+		pathBuilder.WriteString("([a-z0-9-_]+)")
+		lastPos = param.end + 1
+		reqParamList[param.pos] = param.name
+	}
+	pathBuilder.WriteString(path[lastPos:])
+	newPath := "^" + pathBuilder.String() + "$"
+
+	r.routes[method][newPath] = RequestHandlerPackage{Handler: handler, ParamList: reqParamList}
 }
 
 func (r *Router) RegisteredRoutes() *RequestHandlerMap {
 	return &r.routes
 }
 
-func NewRouter() *Router {
-	return &Router{
-		routes: make(RequestHandlerMap),
-	}
-}
-
-func debugRequest(_ http.ResponseWriter, req *http.Request) {
-	Log.Debug("Received request:", req.Method, req.URL.Path)
-}
+// ----------- DEFALUT HANDLERS -----------
 
 func routeNotFoundHandler(rw http.ResponseWriter, req *http.Request) {
 	rw.Header().Set("Content-Type", "text/plain")
 	rw.WriteHeader(http.StatusNotFound)
 	fmt.Fprintln(rw, "404 - Page not found")
+}
+
+// ----------- HELPERS -----------
+func debugRequest(_ http.ResponseWriter, req *http.Request) {
+	Log.Debug("Received request:", req.Method, req.URL.Path)
+}
+
+// ----------- CONSTRUCTOR -----------
+func NewRouter() *Router {
+	return &Router{
+		routes: make(RequestHandlerMap),
+	}
 }
