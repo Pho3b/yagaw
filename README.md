@@ -11,6 +11,7 @@ A lightweight, simple, and powerful HTTP web server framework written in Go. Yag
   - [Server](#server)
   - [Router](#router)
   - [Request Handlers](#request-handlers)
+  - [Dynamic Route Parameters](#dynamic-route-parameters-path-parameter-matching)
 - [API Reference](#api-reference)
 - [Examples](#examples)
 - [Logging](#logging)
@@ -150,7 +151,7 @@ func (r *Router) RegisterRoute(method Method, path string, handler ReqHandler)
 
 **Parameters:**
 - `method` (Method): The HTTP method (GET, POST, etc.)
-- `path` (string): The URL path (e.g., "/api/users", "/", "/products/123")
+- `path` (string): The URL path (e.g., "/api/users", "/", "/products/123"). Supports dynamic path parameters using curly braces syntax.
 - `handler` (ReqHandler): The handler function to execute for this route
 
 **Example:**
@@ -163,6 +164,135 @@ router.RegisterRoute(yagaw.POST, "/api/data", func(rw http.ResponseWriter, req *
 	// Handle POST request
 })
 ```
+
+#### Dynamic Route Parameters (Path Parameter Matching)
+
+Yagaw supports dynamic route parameters that allow you to capture values from the URL path. This is useful for creating RESTful endpoints where path segments vary.
+
+##### Syntax
+
+Dynamic parameters are defined using curly braces with the parameter name inside:
+
+```
+/users/{id}
+/posts/{postId}/comments/{commentId}
+/files/{filename}
+```
+
+##### Parameter Rules
+
+- Parameter names can contain lowercase letters (a-z), numbers (0-9), hyphens (-), and underscores (_)
+- Parameters are case-insensitive during matching
+- Parameters use regex pattern matching: `[a-z0-9-_]+`
+- Multiple parameters can be used in a single path
+- Parameters are matched using regex patterns compiled during route registration
+
+##### How It Works
+
+When you register a route with parameters like `/users/{id}`, the router:
+
+1. **Detection**: Identifies parameter placeholders using the pattern `{[a-z0-9-_]+}`
+2. **Conversion**: Converts the path to a regex pattern: `/users/([a-z0-9-_]+)`
+3. **Registration**: Stores the regex pattern as the route key
+4. **Matching**: When a request arrives, the router matches the request path against the registered regex patterns
+5. **Fallback**: If an exact path match fails, it tries regex pattern matching to find a parameterized route
+
+##### Examples
+
+**Basic Parameter Matching:**
+```go
+// Register a route with a parameter
+router.RegisterRoute(yagaw.GET, "/users/{id}", func(rw http.ResponseWriter, req *http.Request) {
+	rw.Header().Set("Content-Type", "text/plain")
+	fmt.Fprintf(rw, "User path: %s\n", req.URL.Path)
+})
+
+// These requests will match:
+// GET /users/123
+// GET /users/john-doe
+// GET /users/user_42
+```
+
+**Multiple Parameters:**
+```go
+router.RegisterRoute(yagaw.GET, "/posts/{postId}/comments/{commentId}", func(rw http.ResponseWriter, req *http.Request) {
+	rw.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(rw, `{"path":"%s"}\n`, req.URL.Path)
+})
+
+// These requests will match:
+// GET /posts/123/comments/456
+// GET /posts/my-post/comments/comment-1
+```
+
+**Dynamic Resource Endpoints:**
+```go
+// Get a specific resource by ID
+router.RegisterRoute(yagaw.GET, "/api/v1/products/{productId}", handleGetProduct)
+
+// Update a resource
+router.RegisterRoute(yagaw.POST, "/api/v1/products/{productId}", handleUpdateProduct)
+
+// Nested resources
+router.RegisterRoute(yagaw.GET, "/api/v1/users/{userId}/orders/{orderId}", handleGetUserOrder)
+```
+
+**Extracting Parameters from Request:**
+
+To extract the parameter values from the request path, you need to parse the URL path:
+
+```go
+import (
+	"regexp"
+	"strings"
+)
+
+router.RegisterRoute(yagaw.GET, "/users/{userId}", func(rw http.ResponseWriter, req *http.Request) {
+	// Method 1: Simple string manipulation
+	parts := strings.Split(req.URL.Path, "/")
+	if len(parts) >= 3 {
+		userId := parts[2]
+		rw.Header().Set("Content-Type", "text/plain")
+		fmt.Fprintf(rw, "User ID: %s\n", userId)
+	}
+})
+
+router.RegisterRoute(yagaw.GET, "/posts/{postId}/comments/{commentId}", func(rw http.ResponseWriter, req *http.Request) {
+	// Method 2: Regex extraction for multiple parameters
+	re := regexp.MustCompile(`/posts/([a-z0-9-_]+)/comments/([a-z0-9-_]+)`)
+	matches := re.FindStringSubmatch(req.URL.Path)
+	if len(matches) == 3 {
+		postId := matches[1]
+		commentId := matches[2]
+		rw.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(rw, `{"postId":"%s","commentId":"%s"}\n`, postId, commentId)
+	}
+})
+```
+
+##### Case Insensitivity
+
+Parameter matching is case-insensitive by default. This means `/users/{id}` will match:
+- `/users/ABC`
+- `/users/abc`
+- `/users/AbC`
+
+The matching is case-insensitive but the captured value preserves its original case from the request.
+
+##### Priority and Matching Order
+
+1. **Exact Path Match**: The router first attempts to find an exact match for the requested path
+2. **Pattern Match**: If no exact match is found, it then tries regex pattern matching against parameterized routes
+3. **Not Found**: If neither matches, the 404 handler is invoked
+
+This ensures that exact routes take precedence over parameterized routes.
+
+##### Performance Considerations
+
+- Parameter matching uses regex compilation and matching, which has some overhead
+- Register exact paths without parameters when possible for better performance
+- The router caches regex patterns during route registration, not during request matching
+- For frequently accessed routes, consider using exact paths when possible
 
 ##### RegisteredRoutes()
 
@@ -421,6 +551,75 @@ router.RegisterRoute(yagaw.POST, "/api/process", func(rw http.ResponseWriter, re
 	rw.WriteHeader(http.StatusOK)
 	fmt.Fprintln(rw, `{"status":"success"}`)
 })
+```
+
+### With Dynamic Path Parameters
+
+```go
+package main
+
+import (
+	"fmt"
+	"net/http"
+	"regexp"
+	"strings"
+
+	"github.com/Algatux/yagaw"
+	"github.com/pho3b/tiny-logger/logs/log_level"
+)
+
+func main() {
+	yagaw.Log = yagaw.InitLogger(log_level.DebugLvlName)
+	server := yagaw.NewServer("", 8080)
+	router := server.GetRouter()
+
+	// Simple parameter: /users/{id}
+	router.RegisterRoute(yagaw.GET, "/users/{id}", func(rw http.ResponseWriter, req *http.Request) {
+		parts := strings.Split(req.URL.Path, "/")
+		if len(parts) >= 3 {
+			userId := parts[2]
+			rw.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(rw, `{"userId":"%s"}\n`, userId)
+		}
+	})
+
+	// Multiple parameters: /posts/{postId}/comments/{commentId}
+	router.RegisterRoute(yagaw.GET, "/posts/{postId}/comments/{commentId}", func(rw http.ResponseWriter, req *http.Request) {
+		re := regexp.MustCompile(`/posts/([a-z0-9-_]+)/comments/([a-z0-9-_]+)`)
+		matches := re.FindStringSubmatch(req.URL.Path)
+		if len(matches) == 3 {
+			postId := matches[1]
+			commentId := matches[2]
+			rw.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(rw, `{"postId":"%s","commentId":"%s"}\n`, postId, commentId)
+		}
+	})
+
+	// File resource with extension
+	router.RegisterRoute(yagaw.GET, "/files/{filename}", func(rw http.ResponseWriter, req *http.Request) {
+		parts := strings.Split(req.URL.Path, "/")
+		filename := parts[len(parts)-1]
+		rw.Header().Set("Content-Type", "text/plain")
+		fmt.Fprintf(rw, "Requested file: %s\n", filename)
+	})
+
+	server.Run()
+}
+```
+
+**Test the endpoints:**
+```bash
+# GET /users/123 -> {"userId":"123"}
+curl http://localhost:8080/users/123
+
+# GET /users/john-doe -> {"userId":"john-doe"}
+curl http://localhost:8080/users/john-doe
+
+# GET /posts/42/comments/1 -> {"postId":"42","commentId":"1"}
+curl http://localhost:8080/posts/42/comments/1
+
+# GET /files/document-pdf -> Requested file: document-pdf
+curl http://localhost:8080/files/document-pdf
 ```
 
 ### With Query Parameters and Path Extraction
