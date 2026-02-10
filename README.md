@@ -11,7 +11,7 @@ yagaw provides a minimal routing layer and a `Server` wrapper built on Go's stan
 - Register routes per HTTP method: `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, etc.
 - Parameterized paths such as `/users/{id}` (supports alphanumeric, hyphen and underscore).
 - `Server` helper to run an `http.Server` backed by the `Router`.
-- Small dependency: uses `github.com/pho3b/tiny-logger` for logging.
+- Small dependency: uses `github.com/Pho3b/tiny-logger` for logging.
 
 ## API Summary
 
@@ -33,35 +33,36 @@ yagaw provides a minimal routing layer and a `Server` wrapper built on Go's stan
 package main
 
 import (
-    "fmt"
     "net/http"
+    "strings"
 
     "github.com/Algatux/yagaw"
-    "github.com/pho3b/tiny-logger/logs/log_level"
+    "github.com/Pho3b/tiny-logger/logs/log_level"
 )
 
 func main() {
     // Optional: configure logger level
-    yagaw.Log = yagaw.InitLogger(log_level.ErrorLvlName)
+    yagaw.Log = yagaw.InitLogger(log_level.DebugLvlName)
 
     s := yagaw.NewServer("localhost", 8080)
     r := s.GetRouter()
 
-    r.RegisterRoute(yagaw.GET, "/hello", func(w http.ResponseWriter, req *http.Request) {
-        w.Header().Set("Content-Type", "text/plain")
-        fmt.Fprint(w, "Hello, yagaw!")
+    r.RegisterRoute(yagaw.GET, "/hello", func(req *http.Request, params yagaw.Params) *yagaw.HttpResponse {
+        yagaw.Log.Debug("Hello, yagaw!")
+        return yagaw.NewHttpResponse(200).
+            SetHeader("Content-Type", "text/plain")
     })
 
     // Parameterized route example — extract parameter manually inside handler
-    r.RegisterRoute(yagaw.GET, "/users/{id}", func(w http.ResponseWriter, req *http.Request) {
+    r.RegisterRoute(yagaw.GET, "/users/{id}", func(req *http.Request, params yagaw.Params) *yagaw.HttpResponse {
         // simple extraction: split path ("/users/123" -> ["","users","123"])
         parts := strings.Split(req.URL.Path, "/")
         if len(parts) >= 3 {
             id := parts[2]
-            fmt.Fprintf(w, "user id: %s", id)
-            return
+            yagaw.Log.Debug("Received user id:", id)
+            return yagaw.NewHttpResponse(200)
         }
-        http.NotFound(w, req)
+        return yagaw.NewHttpResponse(404)
     })
 
     s.Run()
