@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/pho3b/tiny-logger/logs"
-	"github.com/pho3b/tiny-logger/logs/log_level"
+	"github.com/Pho3b/tiny-logger/logs"
+	"github.com/Pho3b/tiny-logger/logs/log_level"
 )
 
 var Log *logs.Logger = InitLogger(log_level.ErrorLvlName)
